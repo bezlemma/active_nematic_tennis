@@ -6,8 +6,11 @@ using StaticArrays
 using Colors
 
 # --- Constants for Green Color from Activity ---
-const ACTIVITY_GREEN_DIV_STRESS_SQ_THRESHOLD = 0.02f0 # Squared magnitude of div(active_stress) to trigger green (tune this)
-const ACTIVITY_GREEN_SCALAR_ADD = 10.02f0             # Amount of green to add if threshold met (tune this)
+const ACTIVITY_GREEN_DIV_STRESS_SQ_THRESHOLD = 0.02f0 # Squared magnitude of div(active_stress) to trigger green 
+const ACTIVITY_GREEN_SCALAR_ADD = 5.0f0             # Amount of green to add if threshold met
+const PULL_FLUID_FORCE_STRENGTH = 0.3f0 
+const PULL_FLUID_EFFECT_RADIUS_FRAC = 2.5f0 # Multiplied by PADDLE_HEIGHT for effect radius
+
 
 # --- Constants ---
 const PADDLE_SPEED = 350.0f0
@@ -23,7 +26,7 @@ const SCORE_LIMIT = 5
 # --- Fluid Simulation Setup --- Todd C Pomberg
 const NX = 160 # Resolution in X
 const NY = 120 # Resolution in Y
-const DT = 0.001f0 # Time step for Q evolution (may need tuning)
+const DT = 0.001f0 # Time step for Q evolution 
 const SOLVER_ITER = 20 # Iterations for linear solver (Helmholtz and Poisson)
 
 # --- Active Nematic Dimensionless Parameters ---
@@ -38,7 +41,7 @@ const NEMATIC_C_PAPER = 1.0f0
 const NEMATIC_K_ELASTIC_PAPER = 0.01f0
 
 # --- Paddle Jet Constants ---
-const PADDLE_JET_FORCE_STRENGTH = 0.2f0 # NEW: Strength of the body force applied by the paddle jet (tune this!)
+const PADDLE_JET_FORCE_STRENGTH = 0.2f0 #Strength of the body force applied by the paddle jet
 const TARGET_JET_S0 = 0.65f0         # Target nematic scalar order parameter (S₀) in the jet
 const JET_CONE_LENGTH_CELLS = 10     # How many cells deep the direct paddle influence is
 const JET_MAX_WIDTH_FRAC = 1.0f0 / 2.0f0 # Fraction of paddle height for max jet width at cone tip
@@ -194,14 +197,12 @@ function project!(velX::Vector{Float32}, velY::Vector{Float32}, p::Vector{Float3
     end
     set_boundary_scalar!(div_field); set_boundary_scalar!(p)
 
-    # c_inv_poisson = 1.0f0 / (2.0f0 * (INV_DX2 + INV_DY2)) # Denominator for direct solution, not iterative form
     for k in 1:SOLVER_ITER
         p_old_iter = copy(p)
         for j in 2:(NY+1), i in 2:(NX+1)
             idx = IX(i,j)
             sum_lap_neighbors = (p_old_iter[IX(i+1,j)] + p_old_iter[IX(i-1,j)]) * INV_DX2 +
                                 (p_old_iter[IX(i,j+1)] + p_old_iter[IX(i,j-1)]) * INV_DY2
-            # Iterative solver for Poisson: p[idx] = (sum_lap_neighbors - div_field[idx]) / (2*(INV_DX2+INV_DY2))
             p[idx] = ((p_old_iter[IX(i+1,j)] + p_old_iter[IX(i-1,j)]) * INV_DX2 +
                       (p_old_iter[IX(i,j+1)] + p_old_iter[IX(i,j-1)]) * INV_DY2 - div_field[idx]) /
                      (2.0f0 * (INV_DX2 + INV_DY2))
@@ -252,24 +253,11 @@ function calculate_S_flow_term!(Sxx_out::Vector{Float32}, Sxy_out::Vector{Float3
             # Strain rate tensor D_ij = 0.5 * (du_i/dx_j + du_j/dx_i)
             Dxx = dvx_dx # Dyy = dvy_dy = -dvx_dx for incompressible
             Dxy = 0.5f0 * (dvx_dy + dvy_dx)
-            # Vorticity tensor W_ij = 0.5 * (du_i/dx_j - du_j/dx_i) => W_xy = 0.5 * (dvx_dy - dvy_dx)
-            # The code uses omega_xy_tensor = 0.5f0 * (dvy_dx - dvx_dy) which is -W_yx or W_xy but named like general omega.
-            # Let's assume omega_xy_tensor is the relevant component for 2D (Ω_xy in Beris-Edwards).
-            # Commutator [Ω, Q]_xx = Ω_xz Q_zy - Q_xz Ω_zy for 3D. In 2D, using Ω_xy (rotation in xy plane):
-            # Ω = [[0, omega_xy_tensor], [-omega_xy_tensor, 0]]
-            # Q = [[qxx, qxy], [qxy, -qxx]]
-            # (ΩQ)_xx = Ω_xy * qyx = omega_xy_tensor * qxy
-            # (QΩ)_xx = qxx * Ω_xx + qxy * Ω_yx = qxy * (-omega_xy_tensor)
-            # [Ω,Q]_xx = (ΩQ)_xx - (QΩ)_xx = omega_xy_tensor * qxy - (-omega_xy_tensor * qxy) = 2 * omega_xy_tensor * qxy
             omega_xy_val = 0.5f0 * (dvy_dx - dvx_dy) # This is W_yx (or equivalent of Ω_z component times Levi-Civita)
 
             comm_Omega_Q_xx = 2.0f0 * omega_xy_val * qxy
             comm_Omega_Q_xy = -2.0f0 * omega_xy_val * qxx # This corresponds to [Ω,Q]_xy
 
-            # S_ij = ξ D_ij + [Ω,Q]_ij (for general flow-aligning parameter ξ)
-            # Your Sxx_out corresponds to (λ Dxx - comm_Omega_Q_xx) if we assume this is the upper-left of S_ij tensor.
-            # The original code had lambda_align * Dxx. If lambda_align includes the factor of 2 for S_0, then this is fine.
-            # Let's assume lambda_align is ξ.
             Sxx_out[idx] = lambda_align * Dxx - comm_Omega_Q_xx
             Sxy_out[idx] = lambda_align * Dxy - comm_Omega_Q_xy
         end
@@ -282,11 +270,6 @@ function calculate_div_active_stress!(div_sx::Vector{Float32}, div_sy::Vector{Fl
     Threads.@threads for j in 2:(NY+1)
         for i in 2:(NX+1)
             idx = IX(i,j) # Index for the output arrays div_sx, div_sy
-            # Active stress sigma_ij^A = -alpha * Q_ij
-            # div(sigma^A)_x = d(sigma_xx^A)/dx + d(sigma_xy^A)/dy = -alpha * (dQxx/dx + dQxy/dy)
-            # div(sigma^A)_y = d(sigma_yx^A)/dx + d(sigma_yy^A)/dy = -alpha * (dQxy/dx + dQyy/dy)
-            # Since Qyy = -Qxx (traceless), dQyy/dy = -dQxx/dy
-            # So, div(sigma^A)_y = -alpha * (dQxy/dx - dQxx/dy)
 
             dQxx_dx = grad_x_centered(Qxx_in,i,j); dQxx_dy = grad_y_centered(Qxx_in,i,j)
             dQxy_dx = grad_x_centered(Qxy_in,i,j); dQxy_dy = grad_y_centered(Qxy_in,i,j)
@@ -295,26 +278,12 @@ function calculate_div_active_stress!(div_sx::Vector{Float32}, div_sy::Vector{Fl
             div_sy[idx] = -alpha_activity * (dQxy_dx - dQxx_dy) # dQyy/dy = -dQxx/dy
         end
     end
-    # No boundary setting needed here as these are source terms, gradients are on internal points.
 end
 
 function calculate_div_elastic_stress!(div_out_x::Vector{Float32}, div_out_y::Vector{Float32},
                                        Qxx_vec::Vector{Float32}, Qxy_vec::Vector{Float32},
                                        Hxx_vec::Vector{Float32}, Hxy_vec::Vector{Float32},
-                                       K_elastic::Float32, lambda_align::Float32) # lambda_align is ξ here
-
-    # Temporary arrays for elastic stress components
-    # sigma_el_ij = - K (dQ_ik/dx_l)(dQ_jk/dx_l) - lambda [Q,H]_ij + Q_ik H_kj - H_ik Q_kj
-    # The last two terms Q_ik H_kj - H_ik Q_kj are part of the generalized stress, often grouped.
-    # Let's use the formulation from the paper often cited for these type of sims:
-    # sigma_E_ij = -P delta_ij + Q_ik H_kj - H_ik Q_kj - lambda (Q_ik H_kj + H_ik Q_kj)
-    # This is complex. The code implements a specific form.
-    # The provided code calculates:
-    # sigma_el_xx = -lambda_align * comm_QH_xx - 2K ( (dqxx_dx)^2 + (dqxy_dx)^2 )
-    # sigma_el_xy = -lambda_align * comm_QH_xy - 2K ( (dqxx_dx*dqxx_dy) + (dqxy_dx*dqxy_dy) )
-    # sigma_el_yy =                           - 2K ( (dqxx_dy)^2 + (dqxy_dy)^2 )
-    # where comm_QH_xx = 0 and comm_QH_xy = (q_xx*h_xy - q_xy*h_xx) - (h_xx*q_xy - h_xy*q_xx)
-    # This comm_QH_xy is actually 2 * (q_xx*h_xy - q_xy*h_xx), so it's 2 * [Q,H]_xy if H is symmetric.
+                                       K_elastic::Float32, lambda_align::Float32)
 
     sigma_el_xx_temp = zeros(Float32, FLUID_SIZE)
     sigma_el_xy_temp = zeros(Float32, FLUID_SIZE)
@@ -327,68 +296,29 @@ function calculate_div_elastic_stress!(div_out_x::Vector{Float32}, div_out_y::Ve
             q_xx = Qxx_vec[idx]; q_xy = Qxy_vec[idx]
             h_xx = Hxx_vec[idx]; h_xy = Hxy_vec[idx]
 
-            # [Q,H]_xx = Q_xz H_zy - H_xz Q_zy (3D). In 2D:
-            # (QH)_xx = qxx hxx + qxy hyx
-            # (HQ)_xx = hxx qxx + hxy qyx
-            # [Q,H]_xx = (qxx hxx + qxy hxy) - (hxx qxx + hxy qxy) = 0 (if H is symmetric, hyx=hxy)
-
-            # [Q,H]_xy = Q_xz H_zy - H_xz Q_zy (3D). In 2D:
-            # (QH)_xy = qxx hxy + qxy hyy = qxx hxy - qxy hxx (since hyy = -hxx)
-            # (HQ)_xy = hxx qxy + hxy qyy = hxx qxy - hxy qxx (since qyy = -qxx)
-            # [Q,H]_xy = (qxx hxy - qxy hxx) - (hxx qxy - hxy qxx)
-            #           = qxx hxy - qxy hxx - hxx qxy + hxy qxx
-            #           = 2 * (qxx hxy - qxy hxx)
-            
-            # The code's comm_QH_xy = (q_xx*h_xy - q_xy*h_xx) - (h_xx*q_xy - h_xy*q_xx) seems to be related but
-            # if H is symmetric (h_xy = h_yx), (h_xx*q_xy - h_xy*q_xx) is -(q_xy*h_xx - q_xx*h_xy)
-            # so comm_QH_xy = 2 * (q_xx*h_xy - q_xy*h_xx). This is [Q,H]_xy.
-
             comm_QH_xx_val = 0.0f0 # As derived, assuming H_ij is symmetric like Q_ij
             comm_QH_xy_val = 2.0f0 * (q_xx * h_xy - q_xy * h_xx)
 
-
-            # Contribution from Q_ik H_kj - H_ik Q_kj (this is [Q,H]_ij itself) if lambda_align is not 1.
-            # The paper form often has (Q_ik H_kj - H_ik Q_kj) - lambda_align * (Q_ik H_kj + H_ik Q_kj)
-            # The code seems to be using a simplified stress related to flow alignment terms.
-            # The term -lambda_align * comm_QH seems related to the distortion part of Ericksen stress.
-            # sigma_dist_ij = -lambda * [Q,H]_ij (this appears in some formulations for elastic stress)
             sigma_el_xx_temp[idx] = -lambda_align * comm_QH_xx_val # Will be 0
             sigma_el_xy_temp[idx] = -lambda_align * comm_QH_xy_val
-            # sigma_el_yy is not directly set here from this term in the original code.
-            # For symmetry, if sigma_el_xx uses [Q,H]_xx, then sigma_el_yy should use [Q,H]_yy.
-            # [Q,H]_yy = Q_yx H_xy - H_yx Q_xy = qxy hxy - hxy qxy = 0 for symmetric H, Q.
-            # Or if comm_QH_yy is -comm_QH_xx due to tracelessness, it's also 0.
             sigma_el_yy_temp[idx] = lambda_align * comm_QH_xx_val # if sigma_el_yy = -sigma_el_xx from this part
         end
     end
 
-    # Part 2: Terms involving K_elastic (Landau-de Gennes stress / Frank elastic stress part)
-    # sigma_K_ij = -K (dQ_kl/dx_i)(dQ_kl/dx_j) (from Leslie-Ericksen, more or less)
     Threads.@threads for j_idx in 2:(NY+1)
         for i_idx in 2:(NX+1)
             idx = IX(i_idx, j_idx)
 
             dqxx_dx = grad_x_centered(Qxx_vec, i_idx, j_idx)
             dqxy_dx = grad_x_centered(Qxy_vec, i_idx, j_idx)
-            # dqyy_dx = -dqxx_dx
 
             dqxx_dy = grad_y_centered(Qxx_vec, i_idx, j_idx)
             dqxy_dy = grad_y_centered(Qxy_vec, i_idx, j_idx)
-            # dqyy_dy = -dqxx_dy
 
-            # Sum over k,l: (dQ_kl/dx_i) * (dQ_kl/dx_j)
-            # For sigma_K_xx (i=x, j=x): (dQ_xx/dx)^2 + (dQ_xy/dx)^2 + (dQ_yx/dx)^2 + (dQ_yy/dx)^2
-            # = (dQ_xx/dx)^2 + (dQ_xy/dx)^2 + (dQ_xy/dx)^2 + (-dQ_xx/dx)^2
-            # = 2 * ( (dQ_xx/dx)^2 + (dQ_xy/dx)^2 )
             sigma_K_xx_val = -K_elastic * 2.0f0 * (dqxx_dx^2 + dqxy_dx^2)
 
-            # For sigma_K_xy (i=x, j=y): (dQ_xx/dx)(dQ_xx/dy) + (dQ_xy/dx)(dQ_xy/dy) + (dQ_yx/dx)(dQ_yx/dy) + (dQ_yy/dx)(dQ_yy/dy)
-            # = (dQ_xx/dx)(dQ_xx/dy) + (dQ_xy/dx)(dQ_xy/dy) + (dQ_xy/dx)(dQ_xy/dy) + (-dQ_xx/dx)(-dQ_xx/dy)
-            # = 2 * ( (dQ_xx/dx)(dQ_xx/dy) + (dQ_xy/dx)(dQ_xy/dy) )
             sigma_K_xy_val = -K_elastic * 2.0f0 * (dqxx_dx * dqxx_dy + dqxy_dx * dqxy_dy)
 
-            # For sigma_K_yy (i=y, j=y): (dQ_xx/dy)^2 + (dQ_xy/dy)^2 + (dQ_yx/dy)^2 + (dQ_yy/dy)^2
-            # = 2 * ( (dQ_xx/dy)^2 + (dQ_xy/dy)^2 )
             sigma_K_yy_val = -K_elastic * 2.0f0 * (dqxx_dy^2 + dqxy_dy^2)
 
             sigma_el_xx_temp[idx] += sigma_K_xx_val
@@ -400,7 +330,6 @@ function calculate_div_elastic_stress!(div_out_x::Vector{Float32}, div_out_y::Ve
     set_boundary_scalar!(sigma_el_xy_temp)
     set_boundary_scalar!(sigma_el_yy_temp)
 
-    # Part 3: Divergence of the total elastic stress
     Threads.@threads for j_idx in 2:(NY+1)
         for i_idx in 2:(NX+1)
             idx = IX(i_idx, j_idx)
@@ -408,14 +337,10 @@ function calculate_div_elastic_stress!(div_out_x::Vector{Float32}, div_out_y::Ve
             div_out_y[idx] = grad_x_centered(sigma_el_xy_temp, i_idx, j_idx) + grad_y_centered(sigma_el_yy_temp, i_idx, j_idx)
         end
     end
-    # No boundary setting for div_out_x, div_out_y as they are source terms.
 end
 
-
-# --- NEW HELPER FUNCTION FOR ADDING PADDLE JET BODY FORCE ---
 function _add_jet_force_in_cone!(
     force_vx_array::Vector{Float32}, # This is fluid_vx0
-    # force_vy_array::Vector{Float32}, # If y-force needed in future
     paddle_id::Int,
     paddle_base_y_world::Float32,
     force_strength::Float32
@@ -458,8 +383,6 @@ function _add_jet_force_in_cone!(
             idx_cone = IX(current_gxi, current_gyi)
             
             force_vx_array[idx_cone] += jet_force_x_actual
-            # If y-component of force is needed:
-            # force_vy_array[idx_cone] += ... 
         end
     end
 end
@@ -514,9 +437,7 @@ function fluid_step!(p1_is_pushing::Bool, p1_y_world::Float32, p2_is_pushing::Bo
             fluid_color_G[i] = min(1.0f0, fluid_color_G[i] + ACTIVITY_GREEN_SCALAR_ADD)
         end
     end
-    # Note: Boundaries for fluid_color_G were handled by the advect step.
-    # This source term might lead to green appearing near boundaries if activity is high there.
-    # The visualization will clamp it.
+
 
     Threads.@threads for i in 1:FLUID_SIZE
         fluid_vx0[i] = fluid_div_sigma_active_x[i] + fluid_div_sigma_elastic_x[i]
@@ -569,7 +490,51 @@ function rect_overlaps(r1::Rect2f, r2::Rect2f)
     return x_overlap && y_overlap
 end
 
-# --- Paddle Jet Helper Function (Now for Q and Color only) ---
+
+function _add_pull_fluid_force!(
+    force_vx_array::Vector{Float32}, # fluid_vx0
+    force_vy_array::Vector{Float32}, # fluid_vy0
+    paddle_id::Int,
+    paddle_base_y_world::Float32,
+    strength::Float32
+)
+    paddle_center_x_world = (paddle_id == 1) ? PADDLE_WIDTH / 2.0f0 : COURT_WIDTH - PADDLE_WIDTH / 2.0f0
+    # Make the pull target slightly in front of the paddle face
+    pull_target_x_offset = (paddle_id == 1) ? PADDLE_WIDTH * 0.8f0 : -PADDLE_WIDTH * 0.8f0
+    pull_origin_x_world = (paddle_id == 1) ? PADDLE_WIDTH + pull_target_x_offset : (COURT_WIDTH - PADDLE_WIDTH) + pull_target_x_offset
+
+    paddle_center_y_world = paddle_base_y_world + PADDLE_HEIGHT / 2.0f0
+    pull_target_world = Point2f(pull_origin_x_world, paddle_center_y_world)
+
+    pull_effect_radius_sq = (PADDLE_HEIGHT * PULL_FLUID_EFFECT_RADIUS_FRAC)^2
+
+    Threads.@threads for j_grid in 2:(NY+1) # Iterate over internal fluid grid cells
+        for i_grid in 2:(NX+1)
+            idx = IX(i_grid, j_grid)
+            # Calculate world position of the current fluid cell center
+            # (i_grid-1) because grid indices run 1 to NX+2, world coords from 0
+            cell_pos_world_x = (Float32(i_grid-1) - 0.5f0) * FLUID_DX 
+            cell_pos_world_y = (Float32(j_grid-1) - 0.5f0) * FLUID_DY
+            cell_pos_world = Point2f(cell_pos_world_x, cell_pos_world_y)
+
+            vec_to_target = pull_target_world - cell_pos_world
+            dist_sq_to_target = sum(vec_to_target .^ 2)
+
+            if dist_sq_to_target < pull_effect_radius_sq && dist_sq_to_target > 1e-5 # Check if within radius and not exactly on target
+                dir_to_target = normalize(vec_to_target)
+                
+                # Force stronger closer to the target (inverse square or linear falloff)
+                # Using a linear falloff for simplicity here:
+                falloff_factor = 1.0f0 - sqrt(dist_sq_to_target) / sqrt(pull_effect_radius_sq)
+                force_magnitude_at_cell = strength * falloff_factor^2 # Sharper falloff
+
+                force_vx_array[idx] += dir_to_target[1] * force_magnitude_at_cell
+                force_vy_array[idx] += dir_to_target[2] * force_magnitude_at_cell
+            end
+        end
+    end
+end
+
 function apply_paddle_jet_effect!( # Renamed in thought process, but keeping user's name for now
     paddle_id::Int, 
     paddle_base_y_world::Float32 
@@ -578,7 +543,6 @@ function apply_paddle_jet_effect!( # Renamed in thought process, but keeping use
     _, paddle_center_gy_float = world_to_grid(Point2f(0f0, paddle_center_y_world)) 
     paddle_center_gy_idx = clamp(round(Int, paddle_center_gy_float), 2, NY + 1)
 
-    # jet_speed_x_actual = (paddle_id == 1) ? PADDLE_JET_SPEED : -PADDLE_JET_SPEED # REMOVED
     director_angle = (paddle_id == 1) ? 0.0f0 : Float32(pi)
 
     paddle_height_cells = PADDLE_HEIGHT / FLUID_DY
@@ -613,11 +577,6 @@ function apply_paddle_jet_effect!( # Renamed in thought process, but keeping use
             current_gyi = clamp(paddle_center_gy_idx + gy_offset_loop, 2, NY + 1)
             idx_cone = IX(current_gxi, current_gyi)
 
-            # 1. SET Fluid Velocity -- REMOVED
-            # fluid_vx[idx_cone] = jet_speed_x_actual # REMOVED
-            # fluid_vy[idx_cone] = 0.0f0             # REMOVED
-
-            # 2. SET Fluid Color
             if paddle_id == 1 
                 fluid_color_R[idx_cone] = 1.0f0
                 fluid_color_G[idx_cone] = 0.0f0
@@ -628,9 +587,6 @@ function apply_paddle_jet_effect!( # Renamed in thought process, but keeping use
                 fluid_color_B[idx_cone] = 1.0f0
             end
 
-            # 3. SET Nematic Alignment (Q tensor)
-            #fluid_Qxx[idx_cone] = TARGET_JET_S0 * cos(2.0f0 * director_angle)
-            #fluid_Qxy[idx_cone] = TARGET_JET_S0 * sin(2.0f0 * director_angle)
         end
     end
 end
@@ -726,42 +682,13 @@ function run()
                 qxx_val = fluid_Qxx[idx_sim_grid]
                 qxy_val = fluid_Qxy[idx_sim_grid]
                 director_x = 0.0f0; director_y = 0.0f0; epsilon = 1e-7
-                
-                # Director from Q tensor (standard way for visualization)
-                # n_x = cos(phi), n_y = sin(phi)
-                # Q_xx = S * (cos^2(phi) - 1/2)  => S * ( (cos(2phi)+1)/2 - 1/2 ) = S/2 * cos(2phi) -- if S is S0 order param
-                # Q_xy = S * cos(phi)sin(phi)    => S/2 * sin(2phi)
-                # So, if Q_xx = A, Q_xy = B, then 2A/S = cos(2phi), 2B/S = sin(2phi)
-                # We can use (Q_xx, Q_xy) as a vector proportional to (cos(2phi), sin(2phi))
-                # Or, eigenvector corresponding to the largest eigenvalue of Q.
-                # Largest eigenvalue is S/2 (using S0 as eigenvalue related to order parameter)
-                # Eigenvector (nx, ny) satisfies:
-                # Qxx*nx + Qxy*ny = (S/2)*nx
-                # Qxy*nx - Qxx*ny = (S/2)*ny  (since Qyy = -Qxx)
-                # One common director choice: (Qxy, S/2 - Qxx) or (S/2 + Qxx, Qxy)
-                # Or, if Qxx = S/2 cos(2θ), Qxy = S/2 sin(2θ), then θ is angle of director.
-                # We can also just plot (Q_xx, Q_xy) and normalize for direction of n d n (dyadic product tensor).
-                # Or more simply, if Qxx = S (cos^2θ - sin^2θ)/2 and Qxy = S sinθcosθ.
-                # Let's stick to a common visualization: principal eigenvector direction.
-                # For Q = [[qxx, qxy], [qxy, -qxx]], eigenvalues are +/- sqrt(qxx^2 + qxy^2)
+
                 lambda_eigen = sqrt(qxx_val^2 + qxy_val^2)
                 if lambda_eigen < epsilon # Isotropic or very small order
                     director_x = 1.0f0; director_y = 0.0f0; # Default
                 else
-                    # Eigenvector for positive eigenvalue lambda_eigen:
-                    # (qxx - lambda_eigen)vx + qxy*vy = 0
-                    # qxy*vx + (-qxx - lambda_eigen)vy = 0
-                    # A non-trivial solution for (A,B) in (qxx-lambda)A + qxyB = 0 is A=qxy, B=-(qxx-lambda)
                     director_x = qxy_val 
                     director_y = lambda_eigen - qxx_val 
-                    # Alternative: director_x = lambda_eigen + qxx_val, director_y = qxy_val
-                    # Both should give orthogonal eigenvectors. We need the one for positive lambda.
-                    # Let's test: if qxx > 0, qxy = 0, lambda = qxx. director_x=0, director_y=0 (bad choice here)
-                    # if qxx > 0, qxy = 0, lambda = qxx. Then Qxx = S/2. director = (1,0) or (0,1) based on definition.
-                    # For Qxx = S/2, Qxy = 0, dir is (1,0). (cos(2a)=1, sin(2a)=0 => 2a=0 => a=0). (nx=1,ny=0)
-                    # My eigenvector (0, S/2 - S/2) = (0,0) is not good.
-                    # Let's use the standard: if Q = S/2 {{cos(2f), sin(2f)},{sin(2f), -cos(2f)}}, director is (cos f, sin f)
-                    # So, effectively angle is 0.5*atan(Qxy,Qxx)
                     angle_double = atan(qxy_val, qxx_val) # Gives angle of (Qxx, Qxy) vector, which is 2*phi
                     angle_director = 0.5f0 * angle_double
                     director_x = cos(angle_director)
@@ -778,7 +705,6 @@ function run()
             end
             if vis_idx > num_arrows break end
         end
-        # Assign only if all arrows were processed, or handle partial update carefully.
         if num_arrows > 0 && vis_idx -1 == num_arrows 
              arrow_dir_obs[] = new_arrow_dirs_local
         elseif num_arrows == 0
@@ -818,7 +744,6 @@ function run()
         fluid_time_accumulator[] += dt_game
         steps_taken = 0; max_steps_per_frame = 5 # Max fluid steps per game frame
         while fluid_time_accumulator[] >= DT && steps_taken < max_steps_per_frame
-            # Apply Q and Color modifications from paddle (if keys are held)
             if is_p1_pushing_this_frame
                 apply_paddle_jet_effect!(1, p_left_y_val); 
             end
@@ -826,7 +751,6 @@ function run()
                 apply_paddle_jet_effect!(2, p_right_y_val); 
             end
 
-            # Pass paddle state to fluid_step for body force application
             fluid_step!(is_p1_pushing_this_frame, p_left_y_val, is_p2_pushing_this_frame, p_right_y_val)
             
             fluid_time_accumulator[] -= DT
@@ -903,7 +827,7 @@ function run()
                  angle_offset = (rand(Float32) * (pi/3f0)) - (pi/6f0) # +/- 30 degrees
                  angle=base_angle + angle_offset
                  serve_speed=current_ball_speed[] # Use current_ball_speed observable's value
-                 ball_vel[]=Vec2f(cos(angle), sin(angle))*serve_speed
+                 ball_vel[] = Vec2f( cos(angle) , sin(angle) ) * serve_speed
                  serve_state[] = :playing; game_message[] = ""; return Consume(true)
             end
         end

@@ -27,12 +27,12 @@ const BALL_DRAG_COEFF = 0.05f0 # How much ball is affected by general fluid moti
 const vel_scale = 10000.0f0 # Scales interpolated fluid velocity for drag effect
 
 # --- Push/Pull Constants ---
-const PUSH_VELOCITY = 450.0f0   # Strength of the outward "push" fluid effect (per second)
-const PUSH_DENSITY = 400.0f0   # Density added by pushing (per second)
-const PUSH_PLUME_WIDTH_PX = 8.0f0 # <<< NEW: Width of the push plume in pixels
-const PULL_FORCE_STRENGTH = 2000.0f0 # Direct force applied to the ball when pulling (tune this!)
-const PULL_EFFECT_RADIUS_SQ = (PADDLE_HEIGHT * 1.2f0)^2 # Squared radius for pull visualization (optional)
-const PULL_DENSITY_ADD = 1.0f0 # Density added near paddle center during pull (visual only, per second)
+const PUSH_VELOCITY = 450.0f0   # Strength of the outward "push" fluid effect
+const PUSH_DENSITY = 400.0f0   # Density added by pushing 
+const PUSH_PLUME_WIDTH_PX = 8.0f0 #
+const PULL_FORCE_STRENGTH = 2000.0f0 # Direct force applied to the ball when pulling
+const PULL_EFFECT_RADIUS_SQ = (PADDLE_HEIGHT * 1.2f0)^2 # Squared radius for pull visualization
+const PULL_DENSITY_ADD = 1.0f0 # Density added near paddle center during pull 
 
 # --- Fluid Constants ---
 const FLUID_DENS_MAX = 2000.0f0
@@ -132,13 +132,10 @@ function fluid_step!()
     # Advect Density
     dens_pre_advect = copy(fluid_dens)
     advect!(0, fluid_dens, dens_pre_advect, fluid_vx, fluid_vy, dt)
-
-    # --- Fluid Sources are now added per-frame in the main loop ---
 end
 
 # --- Interaction Functions ---
 
-# Convert world coordinates (pixels) to fluid grid coordinates
 function world_to_grid(pos::Point2f)
     gx = (pos[1] / COURT_WIDTH) * FLUID_NX + 1.5f0 # Add 0.5 to center in cell, +1 for border offset
     gy = (pos[2] / COURT_HEIGHT) * FLUID_NY + 1.5f0 # Add 0.5 to center in cell, +1 for border offset
@@ -154,8 +151,6 @@ function get_fluid_velocity_at(pos::Point2f)::Vec2f
     i0 = floor(Int, gx); i1 = i0 + 1; j0 = floor(Int, gy); j1 = j0 + 1
 
     s1 = gx - i0; s0 = 1.0f0 - s1; t1 = gy - j0; t0 = 1.0f0 - t1
-
-    # IX function handles clamping to valid *array access* indices [1, N+2]
     vx = s0 * (t0 * fluid_vx[IX(i0, j0)] + t1 * fluid_vx[IX(i0, j1)]) +
          s1 * (t0 * fluid_vx[IX(i1, j0)] + t1 * fluid_vx[IX(i1, j1)])
     vy = s0 * (t0 * fluid_vy[IX(i0, j0)] + t1 * fluid_vy[IX(i0, j1)]) +
@@ -264,10 +259,6 @@ function run()
         # --- Fluid Simulation Update ---
         if FLUID_ENABLED
             fluid_time_accumulator[] += dt
-            # Fluid sources (velocity/density injection) are added here, *before* stepping
-            # This ensures they are included in the current frame's simulation step
-
-            # --- NEW: Fluid Push/Pull Emitters & Ball Force ---
             direct_pull_force = Vec2f(0.0f0) # Force applied directly to the ball
 
             push_vel_dt = PUSH_VELOCITY * dt
@@ -276,29 +267,21 @@ function run()
 
             # --- Left Paddle Actions ---
             if Keyboard.d in keys # PUSH
-                # --- MODIFIED PUSH LOGIC ---
                 paddle_center_y = p_left_y + PADDLE_HEIGHT / 2f0
-                # Target x slightly in front of paddle for fluid emission
                 target_x_world = PADDLE_WIDTH + FLUID_DX * 0.5f0
-                # Convert center point to grid coords
                 pc_gx, pc_gy = world_to_grid(Point2f(target_x_world, paddle_center_y))
                 center_gxi = clamp(floor(Int, pc_gx), 2, FLUID_NX + 1) # Get grid X index
                 center_gyi = clamp(floor(Int, pc_gy), 2, FLUID_NY + 1) # Get grid Y index of center
 
-                # Calculate plume half-width in grid cells
                 plume_half_width_grid = ceil(Int, (PUSH_PLUME_WIDTH_PX / FLUID_DY) / 2.0f0)
 
-                # Determine start and end grid Y indices for the plume
                 gy_start = clamp(center_gyi - plume_half_width_grid, 2, FLUID_NY + 1)
                 gy_end = clamp(center_gyi + plume_half_width_grid, 2, FLUID_NY + 1)
-
-                # Apply force only in the plume region at the calculated X index
                 for gyi in gy_start:gy_end
                     idx = IX(center_gxi, gyi)
                     fluid_vx[idx] += push_vel_dt   # Add velocity outwards
                     fluid_dens[idx] += push_dens_dt # Add density
                 end
-                # --- END MODIFIED PUSH LOGIC ---
 
             elseif Keyboard.a in keys && serve_state[] == :playing # PULL (only when playing)
                 paddle_center_y = p_left_y + PADDLE_HEIGHT / 2f0
@@ -311,14 +294,12 @@ function run()
                     direct_pull_force += force_dir * PULL_FORCE_STRENGTH * strength_factor
                 end
 
-                # Add density near paddle center for visual feedback (Unchanged)
                 pc_gx, pc_gy = world_to_grid(paddle_center_world)
                 gxi_c = clamp(floor(Int, pc_gx), 2, FLUID_NX + 1)
                 gyi_c = clamp(floor(Int, pc_gy), 2, FLUID_NY + 1)
                 idx_c = IX(gxi_c, gyi_c)
                 fluid_dens[idx_c] += pull_dens_dt * 5
 
-                # Optional density radius (Unchanged)
                 radius_grid_sq_x = (PULL_EFFECT_RADIUS_SQ / FLUID_DX^2)
                 radius_grid_sq_y = (PULL_EFFECT_RADIUS_SQ / FLUID_DY^2)
                 min_ix = clamp(floor(Int, pc_gx - sqrt(radius_grid_sq_x)), 2, FLUID_NX + 1)
@@ -334,31 +315,24 @@ function run()
                  end
             end
 
-            # --- Right Paddle Actions ---
             if Keyboard.left in keys # PUSH
-                # --- MODIFIED PUSH LOGIC ---
                 paddle_center_y = p_right_y + PADDLE_HEIGHT / 2f0
-                # Target x slightly in front of paddle for fluid emission
+              
                 target_x_world = COURT_WIDTH - PADDLE_WIDTH - FLUID_DX * 0.5f0
-                 # Convert center point to grid coords
                 pc_gx, pc_gy = world_to_grid(Point2f(target_x_world, paddle_center_y))
                 center_gxi = clamp(floor(Int, pc_gx), 2, FLUID_NX + 1) # Get grid X index
                 center_gyi = clamp(floor(Int, pc_gy), 2, FLUID_NY + 1) # Get grid Y index of center
 
-                # Calculate plume half-width in grid cells
                 plume_half_width_grid = ceil(Int, (PUSH_PLUME_WIDTH_PX / FLUID_DY) / 2.0f0)
 
-                # Determine start and end grid Y indices for the plume
                 gy_start = clamp(center_gyi - plume_half_width_grid, 2, FLUID_NY + 1)
                 gy_end = clamp(center_gyi + plume_half_width_grid, 2, FLUID_NY + 1)
 
-                # Apply force only in the plume region at the calculated X index
                 for gyi in gy_start:gy_end
                     idx = IX(center_gxi, gyi)
                     fluid_vx[idx] -= push_vel_dt  # Add velocity outwards (negative x)
                     fluid_dens[idx] += push_dens_dt
                 end
-                # --- END MODIFIED PUSH LOGIC ---
 
             elseif Keyboard.right in keys && serve_state[] == :playing # PULL (only when playing)
                 paddle_center_y = p_right_y + PADDLE_HEIGHT / 2f0
@@ -371,14 +345,12 @@ function run()
                     direct_pull_force += force_dir * PULL_FORCE_STRENGTH * strength_factor
                  end
 
-                 # Add density near paddle center for visual feedback (Unchanged)
                  pc_gx, pc_gy = world_to_grid(paddle_center_world)
                  gxi_c = clamp(floor(Int, pc_gx), 2, FLUID_NX + 1)
                  gyi_c = clamp(floor(Int, pc_gy), 2, FLUID_NY + 1)
                  idx_c = IX(gxi_c, gyi_c)
                  fluid_dens[idx_c] += pull_dens_dt * 5
 
-                 # Optional density radius (Unchanged)
                  radius_grid_sq_x = (PULL_EFFECT_RADIUS_SQ / FLUID_DX^2)
                  radius_grid_sq_y = (PULL_EFFECT_RADIUS_SQ / FLUID_DY^2)
                  min_ix = clamp(floor(Int, pc_gx - sqrt(radius_grid_sq_x)), 2, FLUID_NX + 1)
@@ -393,10 +365,7 @@ function run()
                      end
                  end
             end
-            # --- End Fluid Push/Pull ---
-
             # --- Fluid Simulation Step ---
-            # Run the fluid simulation step(s) *after* adding sources for the frame
             while fluid_time_accumulator[] >= FLUID_DT
                 fluid_step!() # Applies diffusion, advection, projection
                 fluid_time_accumulator[] -= FLUID_DT
@@ -414,9 +383,8 @@ function run()
             # Update observable ONCE per frame *after* all simulation steps for the frame
             density_view = reshape(view(fluid_dens, [IX(i,j) for i=2:FLUID_NX+1, j=2:FLUID_NY+1]), (FLUID_NX, FLUID_NY))
             fluid_dens_obs[] = density_view
-        end # End if FLUID_ENABLED
+        end 
 
-        # --- Paddle Movement (Unchanged) ---
         paddle_delta = PADDLE_SPEED * dt
         if Keyboard.w in keys; paddle_left_y[] += paddle_delta; end
         if Keyboard.s in keys; paddle_left_y[] -= paddle_delta; end
@@ -430,24 +398,15 @@ function run()
             # Calculate total force on the ball
             total_force = Vec2f(0.0f0)
 
-            # 1. Fluid Drag Force
             if FLUID_ENABLED
                 fluid_vel_at_ball = get_fluid_velocity_at(bp) # Interpolated fluid velocity
                 relative_vel = fluid_vel_at_ball - bv # Fluid vel relative to ball
-                # Simple linear drag model F = k * v_rel
                 drag_force = BALL_DRAG_COEFF * relative_vel
                 total_force += drag_force
             end
 
-            # 2. Direct Pull Force (calculated in the fluid emitter section)
-            total_force += direct_pull_force
-
-            # Update velocity and position using symplectic Euler integration (more stable)
-            # F = ma => a = F/m. Assume m=1 for simplicity. a = F.
             new_bv = bv + total_force * dt # Update velocity first
             new_bp = bp + new_bv * dt     # Update position using *new* velocity
-
-            # Collisions (Walls) - Check predicted position
             collided_y = false
             if new_bp[2] - BALL_SIZE/2f0 <= 0f0
                 new_bp = Point2f(new_bp[1], BALL_SIZE/2f0 + 0.1f0) # Correct position
@@ -459,7 +418,6 @@ function run()
                 collided_y = true
             end
 
-            # Collisions (Paddles) - Check using predicted position after wall bounce correction
             paddle_left_rect = Rect2f(0f0, p_left_y, PADDLE_WIDTH, PADDLE_HEIGHT)
             paddle_right_rect = Rect2f(COURT_WIDTH - PADDLE_WIDTH, p_right_y, PADDLE_WIDTH, PADDLE_HEIGHT)
             ball_rect_predict = Rect2f(new_bp[1]-BALL_SIZE/2f0, new_bp[2]-BALL_SIZE/2f0, BALL_SIZE, BALL_SIZE)
@@ -486,12 +444,10 @@ function run()
                 new_bv = Vec2f(cos(world_angle), sin(world_angle)) * cbs # New velocity vector
             end
 
-            # Update final ball state for this frame
             ball_pos[] = new_bp
             ball_vel[] = new_bv
             current_ball_speed[] = cbs
 
-            # Scoring - Check position *after* all movement and bounces
             scored = false
             final_pos = ball_pos[]
             if final_pos[1] - BALL_SIZE/2f0 <= 0f0 # Left boundary miss
@@ -525,10 +481,7 @@ function run()
         return Consume(false)
     end # end on tick
 
-
-    # --- Serve / Restart Handler (Unchanged from previous version) ---
     on(events(fig).keyboardbutton) do event
-        # --- Serve Logic ---
         is_serve_key_p1 = event.key == Keyboard.space || event.key == Keyboard.a || event.key == Keyboard.d
         is_serve_key_p2 = event.key == Keyboard.enter || event.key == Keyboard.left || event.key == Keyboard.right
         current_state = serve_state[] # Cache current state
@@ -575,7 +528,6 @@ function run()
             return Consume(true)
         end
 
-        # Don't consume other key events (like holds for push/pull/movement)
         return Consume(false)
     end # end on keyboard
 
@@ -583,5 +535,4 @@ function run()
     return fig
 end
 
-# --- Start Game ---
 run()
