@@ -6,9 +6,9 @@ using StaticArrays
 using Colors
 
 # --- Constants for Green Color from Activity ---
-const ACTIVITY_GREEN_DIV_STRESS_SQ_THRESHOLD = 0.02f0 # Squared magnitude of div(active_stress) to trigger green 
-const ACTIVITY_GREEN_SCALAR_ADD = 5.0f0             # Amount of green to add if threshold met
-const PULL_FLUID_FORCE_STRENGTH = 0.3f0 
+const ACTIVITY_GREEN_DIV_STRESS_SQ_THRESHOLD = 0.02f0 # Squared magnitude of div(active_stress) to trigger green
+const ACTIVITY_GREEN_SCALAR_ADD = 0.0f0          # Amount of green to add if threshold met
+const PULL_FLUID_FORCE_STRENGTH = 0.3f0
 const PULL_FLUID_EFFECT_RADIUS_FRAC = 2.5f0 # Multiplied by PADDLE_HEIGHT for effect radius
 
 
@@ -26,24 +26,30 @@ const SCORE_LIMIT = 5
 # --- Fluid Simulation Setup --- Todd C Pomberg
 const NX = 160 # Resolution in X
 const NY = 120 # Resolution in Y
-const DT = 0.001f0 # Time step for Q evolution 
+const DT = 0.0001f0 # Time step for Q evolution
 const SOLVER_ITER = 20 # Iterations for linear solver (Helmholtz and Poisson)
 
-# --- Active Nematic Dimensionless Parameters ---
-const μ = 0.01f0 #viscosity μ
-const ζ = 0.0000001f0 #substrate friction ζ
-const λ= 0.7f0 #flow alignment λ
+# --- Active Nematic Dimensionless Parameters (Initial values for Observables) ---
+const INITIAL_VISCOSITY = 0.01f0       # μ
+const ζ = 0.0000001f0                  # substrate friction ζ
+const λ = 0.7f0                        # flow alignment λ
 const γ = 1.0f0
-const α = 0.6f0 # α (activity strength, >0 for extensile)
+const INITIAL_ACTIVITY = 0.6f0       # α (activity strength, >0 for extensile)
 const NEMATIC_A_PAPER = 1.0f0
 const NEMATIC_B_PAPER = -1.0f0
 const NEMATIC_C_PAPER = 1.0f0
-const NEMATIC_K_ELASTIC_PAPER = 0.01f0
+const INITIAL_ELASTICITY = 0.01f0    # NEMATIC_K_ELASTIC_PAPER
+
+# --- Observables for Controllable Parameters ---
+global activity_obs = Observable(INITIAL_ACTIVITY)
+global viscosity_obs = Observable(INITIAL_VISCOSITY)
+global elasticity_obs = Observable(INITIAL_ELASTICITY)
+
 
 # --- Paddle Jet Constants ---
 const PADDLE_JET_FORCE_STRENGTH = 0.2f0 #Strength of the body force applied by the paddle jet
-const TARGET_JET_S0 = 0.65f0         # Target nematic scalar order parameter (S₀) in the jet
-const JET_CONE_LENGTH_CELLS = 10     # How many cells deep the direct paddle influence is
+const TARGET_JET_S0 = 0.65f0          # Target nematic scalar order parameter (S₀) in the jet
+const JET_CONE_LENGTH_CELLS = 10      # How many cells deep the direct paddle influence is
 const JET_MAX_WIDTH_FRAC = 1.0f0 / 2.0f0 # Fraction of paddle height for max jet width at cone tip
 
 # --- Ball/Fluid Interaction ---
@@ -114,14 +120,14 @@ function set_boundary_velocity!(b::Int, x::Vector{Float32})
         x[IX(N+2, j)] = b == 1 ? 0.0f0 : x[IX(N+1,j)]
     end
     # Ensure tangential flow for no-slip, or free-slip based on 'b'
-     for i in 1:(N+2) # Top/Bottom boundaries
-         x[IX(i,1)] = b==1 ? x[IX(i,2)] : -x[IX(i,2)] # If b=1 (vx), tangential means copy. If b=2 (vy), normal is zero, tangential would be -vy[i,2] if it were mirrored.
-         x[IX(i,M+2)] = b==1 ? x[IX(i,M+1)] : -x[IX(i,M+1)] # For vy, this should be -vy[i,M+1] to simulate reflection if b=2
-     end
-     for j in 1:(M+2) # Left/Right boundaries
-         x[IX(1,j)] = b==2 ? x[IX(2,j)] : -x[IX(2,j)]   # If b=2 (vy), tangential means copy. If b=1 (vx), normal is zero.
-         x[IX(N+2,j)] = b==2 ? x[IX(N+1,j)] : -x[IX(N+1,j)]
-     end
+      for i in 1:(N+2) # Top/Bottom boundaries
+          x[IX(i,1)] = b==1 ? x[IX(i,2)] : -x[IX(i,2)] # If b=1 (vx), tangential means copy. If b=2 (vy), normal is zero, tangential would be -vy[i,2] if it were mirrored.
+          x[IX(i,M+2)] = b==1 ? x[IX(i,M+1)] : -x[IX(i,M+1)] # For vy, this should be -vy[i,M+1] to simulate reflection if b=2
+      end
+      for j in 1:(M+2) # Left/Right boundaries
+          x[IX(1,j)] = b==2 ? x[IX(2,j)] : -x[IX(2,j)]   # If b=2 (vy), tangential means copy. If b=1 (vx), normal is zero.
+          x[IX(N+2,j)] = b==2 ? x[IX(N+1,j)] : -x[IX(N+1,j)]
+      end
 
     x[IX(1,1)] = 0.5f0*(x[IX(1,2)]+x[IX(2,1)])
     x[IX(1,M+2)] = 0.5f0*(x[IX(1,M+1)]+x[IX(2,M+2)])
@@ -146,8 +152,8 @@ end
 @inline function grad_y_centered(f::Vector{Float32}, i::Int, j::Int); return (f[IX(i,j+1)] - f[IX(i,j-1)]) * 0.5f0 * INV_DY; end
 
 function general_linear_solve!(b_type::Int, x_out::Vector{Float32}, x0_rhs::Vector{Float32},
-                               coeff_I_term::Float32, coeff_lap_term_dx::Float32, coeff_lap_term_dy::Float32,
-                               iterations::Int)
+                                 coeff_I_term::Float32, coeff_lap_term_dx::Float32, coeff_lap_term_dy::Float32,
+                                 iterations::Int)
     for k in 1:iterations
         x_prev_iter = copy(x_out) # Use current x_out as guess for this iteration
         for j in 2:(NY+1), i in 2:(NX+1)
@@ -192,7 +198,7 @@ function project!(velX::Vector{Float32}, velY::Vector{Float32}, p::Vector{Float3
     for j in 2:(NY+1), i in 2:(NX+1)
         idx = IX(i,j)
         div_field[idx] = (velX[IX(i+1, j)] - velX[IX(i-1, j)]) * 0.5f0 * INV_DX +
-                       (velY[IX(i, j+1)] - velY[IX(i, j-1)]) * 0.5f0 * INV_DY
+                         (velY[IX(i, j+1)] - velY[IX(i, j-1)]) * 0.5f0 * INV_DY
         p[idx] = 0.0f0
     end
     set_boundary_scalar!(div_field); set_boundary_scalar!(p)
@@ -219,8 +225,9 @@ function project!(velX::Vector{Float32}, velY::Vector{Float32}, p::Vector{Float3
 end
 
 function calculate_H!(Hxx_out::Vector{Float32}, Hxy_out::Vector{Float32},
-                      Qxx_in::Vector{Float32}, Qxy_in::Vector{Float32},
-                      K_elastic::Float32, A_coeff::Float32, C_coeff::Float32)
+                        Qxx_in::Vector{Float32}, Qxy_in::Vector{Float32},
+                        A_coeff::Float32, C_coeff::Float32) # K_elastic removed, will use elasticity_obs[]
+    current_elasticity = elasticity_obs[]
     Threads.@threads for j in 2:(NY+1)
         for i in 2:(NX+1)
             idx = IX(i,j)
@@ -231,16 +238,16 @@ function calculate_H!(Hxx_out::Vector{Float32}, Hxy_out::Vector{Float32},
             lap_qxy = laplacian_scalar(Qxy_in, i, j)
             trQ2_val = 2.0f0 * (qxx_val*qxx_val + qxy_val*qxy_val) # Q:Q = Qxx^2 + 2Qxy^2 + Qyy^2 = 2(Qxx^2+Qxy^2) for traceless Qyy=-Qxx
 
-            Hxx_out[idx] = -(A_coeff * qxx_val + 2.0f0 * C_coeff * trQ2_val * qxx_val - K_elastic * lap_qxx)
-            Hxy_out[idx] = -(A_coeff * qxy_val + 2.0f0 * C_coeff * trQ2_val * qxy_val - K_elastic * lap_qxy)
+            Hxx_out[idx] = -(A_coeff * qxx_val + 2.0f0 * C_coeff * trQ2_val * qxx_val - current_elasticity * lap_qxx)
+            Hxy_out[idx] = -(A_coeff * qxy_val + 2.0f0 * C_coeff * trQ2_val * qxy_val - current_elasticity * lap_qxy)
         end
     end
     set_boundary_scalar!(Hxx_out); set_boundary_scalar!(Hxy_out)
 end
 
 function calculate_S_flow_term!(Sxx_out::Vector{Float32}, Sxy_out::Vector{Float32},
-                               Qxx_in::Vector{Float32}, Qxy_in::Vector{Float32},
-                               vx::Vector{Float32}, vy::Vector{Float32}, lambda_align::Float32)
+                                  Qxx_in::Vector{Float32}, Qxy_in::Vector{Float32},
+                                  vx::Vector{Float32}, vy::Vector{Float32}, lambda_align::Float32)
     Threads.@threads for j in 2:(NY+1)
         for i in 2:(NX+1)
             idx = IX(i,j)
@@ -265,8 +272,8 @@ function calculate_S_flow_term!(Sxx_out::Vector{Float32}, Sxy_out::Vector{Float3
 end
 
 function calculate_div_active_stress!(div_sx::Vector{Float32}, div_sy::Vector{Float32},
-                                      Qxx_in::Vector{Float32}, Qxy_in::Vector{Float32},
-                                      alpha_activity::Float32)
+                                        Qxx_in::Vector{Float32}, Qxy_in::Vector{Float32}) # alpha_activity removed, will use activity_obs[]
+    current_activity = activity_obs[]
     Threads.@threads for j in 2:(NY+1)
         for i in 2:(NX+1)
             idx = IX(i,j) # Index for the output arrays div_sx, div_sy
@@ -274,17 +281,18 @@ function calculate_div_active_stress!(div_sx::Vector{Float32}, div_sy::Vector{Fl
             dQxx_dx = grad_x_centered(Qxx_in,i,j); dQxx_dy = grad_y_centered(Qxx_in,i,j)
             dQxy_dx = grad_x_centered(Qxy_in,i,j); dQxy_dy = grad_y_centered(Qxy_in,i,j)
 
-            div_sx[idx] = -alpha_activity * (dQxx_dx + dQxy_dy)
-            div_sy[idx] = -alpha_activity * (dQxy_dx - dQxx_dy) # dQyy/dy = -dQxx/dy
+            div_sx[idx] = -current_activity * (dQxx_dx + dQxy_dy)
+            div_sy[idx] = -current_activity * (dQxy_dx - dQxx_dy) # dQyy/dy = -dQxx/dy
         end
     end
 end
 
 function calculate_div_elastic_stress!(div_out_x::Vector{Float32}, div_out_y::Vector{Float32},
-                                       Qxx_vec::Vector{Float32}, Qxy_vec::Vector{Float32},
-                                       Hxx_vec::Vector{Float32}, Hxy_vec::Vector{Float32},
-                                       K_elastic::Float32, lambda_align::Float32)
+                                         Qxx_vec::Vector{Float32}, Qxy_vec::Vector{Float32},
+                                         Hxx_vec::Vector{Float32}, Hxy_vec::Vector{Float32},
+                                         lambda_align::Float32) # K_elastic removed, will use elasticity_obs[]
 
+    current_elasticity = elasticity_obs[]
     sigma_el_xx_temp = zeros(Float32, FLUID_SIZE)
     sigma_el_xy_temp = zeros(Float32, FLUID_SIZE)
     sigma_el_yy_temp = zeros(Float32, FLUID_SIZE) # Qyy = -Qxx, Hyy = -Hxx
@@ -315,11 +323,9 @@ function calculate_div_elastic_stress!(div_out_x::Vector{Float32}, div_out_y::Ve
             dqxx_dy = grad_y_centered(Qxx_vec, i_idx, j_idx)
             dqxy_dy = grad_y_centered(Qxy_vec, i_idx, j_idx)
 
-            sigma_K_xx_val = -K_elastic * 2.0f0 * (dqxx_dx^2 + dqxy_dx^2)
-
-            sigma_K_xy_val = -K_elastic * 2.0f0 * (dqxx_dx * dqxx_dy + dqxy_dx * dqxy_dy)
-
-            sigma_K_yy_val = -K_elastic * 2.0f0 * (dqxx_dy^2 + dqxy_dy^2)
+            sigma_K_xx_val = -current_elasticity * 2.0f0 * (dqxx_dx^2 + dqxy_dx^2)
+            sigma_K_xy_val = -current_elasticity * 2.0f0 * (dqxx_dx * dqxx_dy + dqxy_dx * dqxy_dy)
+            sigma_K_yy_val = -current_elasticity * 2.0f0 * (dqxx_dy^2 + dqxy_dy^2)
 
             sigma_el_xx_temp[idx] += sigma_K_xx_val
             sigma_el_xy_temp[idx] += sigma_K_xy_val
@@ -353,7 +359,7 @@ function _add_jet_force_in_cone!(
 
     paddle_height_cells = PADDLE_HEIGHT / FLUID_DY
     max_jet_width_at_tip_cells = max(1, round(Int, paddle_height_cells * JET_MAX_WIDTH_FRAC))
-    
+
     start_x_world_edge = (paddle_id == 1) ? PADDLE_WIDTH : (COURT_WIDTH - PADDLE_WIDTH)
     start_gxi_jet_float = if paddle_id == 1
         world_to_grid(Point2f(start_x_world_edge + FLUID_DX * 0.5f0, 0f0))[1]
@@ -362,8 +368,8 @@ function _add_jet_force_in_cone!(
     end
     start_gxi_jet_idx = clamp(round(Int, start_gxi_jet_float), 2, NX + 1)
 
-    base_half_width_cells = max(1, round(Int, (paddle_height_cells / 3.0) / 2.0)) 
-    tip_half_width_cells = max(1, round(Int, max_jet_width_at_tip_cells / 2.0))   
+    base_half_width_cells = max(1, round(Int, (paddle_height_cells / 3.0) / 2.0))
+    tip_half_width_cells = max(1, round(Int, max_jet_width_at_tip_cells / 2.0))
 
     for i_dist_cells in 0:(JET_CONE_LENGTH_CELLS - 1)
         current_gxi = if paddle_id == 1
@@ -372,7 +378,7 @@ function _add_jet_force_in_cone!(
             start_gxi_jet_idx - i_dist_cells
         end
 
-        if !(2 <= current_gxi <= NX + 1) continue end 
+        if !(2 <= current_gxi <= NX + 1) continue end
 
         width_frac = JET_CONE_LENGTH_CELLS <= 1 ? 1.0f0 : Float32(i_dist_cells) / max(1.0f0, Float32(JET_CONE_LENGTH_CELLS - 1))
         current_jet_half_width_cells = round(Int, base_half_width_cells + (tip_half_width_cells - base_half_width_cells) * width_frac)
@@ -381,7 +387,7 @@ function _add_jet_force_in_cone!(
         for gy_offset_loop in -(current_jet_half_width_cells-1):(current_jet_half_width_cells-1)
             current_gyi = clamp(paddle_center_gy_idx + gy_offset_loop, 2, NY + 1)
             idx_cone = IX(current_gxi, current_gyi)
-            
+
             force_vx_array[idx_cone] += jet_force_x_actual
         end
     end
@@ -407,12 +413,12 @@ function fluid_step!(p1_is_pushing::Bool, p1_y_world::Float32, p2_is_pushing::Bo
     advect!(0, fluid_color_B, fluid_color_B0, u_old_vx_for_advection, u_old_vy_for_advection, dt_q_evolution)
 
     calculate_H!(fluid_Hxx, fluid_Hxy, fluid_Qxx, fluid_Qxy,
-                 NEMATIC_K_ELASTIC_PAPER, NEMATIC_A_PAPER, NEMATIC_C_PAPER)
+                   NEMATIC_A_PAPER, NEMATIC_C_PAPER) # K_elastic (elasticity_obs[]) is used inside
 
     Sxx_flow_temp = zeros(Float32, FLUID_SIZE)
     Sxy_flow_temp = zeros(Float32, FLUID_SIZE)
     calculate_S_flow_term!(Sxx_flow_temp, Sxy_flow_temp, fluid_Qxx, fluid_Qxy,
-                           u_old_vx_for_advection, u_old_vy_for_advection, λ)
+                             u_old_vx_for_advection, u_old_vy_for_advection, λ)
 
     Threads.@threads for i in 1:FLUID_SIZE
         fluid_Qxx[i] += dt_q_evolution * (Sxx_flow_temp[i] + γ * fluid_Hxx[i])
@@ -422,13 +428,13 @@ function fluid_step!(p1_is_pushing::Bool, p1_y_world::Float32, p2_is_pushing::Bo
     set_boundary_scalar!(fluid_Qxy)
 
     calculate_H!(fluid_Hxx, fluid_Hxy, fluid_Qxx, fluid_Qxy,
-                  NEMATIC_K_ELASTIC_PAPER, NEMATIC_A_PAPER, NEMATIC_C_PAPER)
+                   NEMATIC_A_PAPER, NEMATIC_C_PAPER) # K_elastic (elasticity_obs[]) is used inside
 
     calculate_div_active_stress!(fluid_div_sigma_active_x, fluid_div_sigma_active_y,
-                                 fluid_Qxx, fluid_Qxy, α)
+                                   fluid_Qxx, fluid_Qxy) # alpha_activity (activity_obs[]) is used inside
     calculate_div_elastic_stress!(fluid_div_sigma_elastic_x, fluid_div_sigma_elastic_y,
-                                  fluid_Qxx, fluid_Qxy, fluid_Hxx, fluid_Hxy,
-                                  NEMATIC_K_ELASTIC_PAPER, λ)
+                                    fluid_Qxx, fluid_Qxy, fluid_Hxx, fluid_Hxy,
+                                    λ) # K_elastic (elasticity_obs[]) is used inside
 
     # --- Add Green Color Based on Nematic Activity ---
     Threads.@threads for i in 1:FLUID_SIZE
@@ -451,11 +457,12 @@ function fluid_step!(p1_is_pushing::Bool, p1_y_world::Float32, p2_is_pushing::Bo
         _add_jet_force_in_cone!(fluid_vx0, 2, p2_y_world, PADDLE_JET_FORCE_STRENGTH)
     end
 
+    current_viscosity = viscosity_obs[]
     general_linear_solve!(1, fluid_vx, fluid_vx0,
-                          ζ, μ * INV_DX2, μ * INV_DY2,
+                          ζ, current_viscosity * INV_DX2, current_viscosity * INV_DY2,
                           SOLVER_ITER)
     general_linear_solve!(2, fluid_vy, fluid_vy0,
-                          ζ, μ * INV_DX2, μ * INV_DY2,
+                          ζ, current_viscosity * INV_DX2, current_viscosity * INV_DY2,
                           SOLVER_ITER)
 
     project!(fluid_vx, fluid_vy, fluid_p, fluid_div)
@@ -463,14 +470,14 @@ end
 
 
 function world_to_grid(pos::Point2f)
-    gx = (pos[1] / COURT_WIDTH) * NX + 1.5f0; 
+    gx = (pos[1] / COURT_WIDTH) * NX + 1.5f0;
     gy = (pos[2] / COURT_HEIGHT) * NY + 1.5f0;
     return gx, gy
 end
 
 function get_fluid_velocity_at(pos::Point2f)::Vec2f
     gx, gy = world_to_grid(pos)
-    gx = clamp(gx, 1.5f0, NX + 0.5f0) 
+    gx = clamp(gx, 1.5f0, NX + 0.5f0)
     gy = clamp(gy, 1.5f0, NY + 0.5f0)
 
     i0 = floor(Int, gx); i1 = i0 + 1
@@ -491,11 +498,11 @@ function rect_overlaps(r1::Rect2f, r2::Rect2f)
 end
 
 function apply_paddle_jet_effect!( # Renamed in thought process, but keeping user's name for now
-    paddle_id::Int, 
-    paddle_base_y_world::Float32 
+    paddle_id::Int,
+    paddle_base_y_world::Float32
 )
     paddle_center_y_world = paddle_base_y_world + PADDLE_HEIGHT / 2.0f0
-    _, paddle_center_gy_float = world_to_grid(Point2f(0f0, paddle_center_y_world)) 
+    _, paddle_center_gy_float = world_to_grid(Point2f(0f0, paddle_center_y_world))
     paddle_center_gy_idx = clamp(round(Int, paddle_center_gy_float), 2, NY + 1)
 
     director_angle = (paddle_id == 1) ? 0.0f0 : Float32(pi)
@@ -504,7 +511,7 @@ function apply_paddle_jet_effect!( # Renamed in thought process, but keeping use
     max_jet_width_at_tip_cells = max(1, round(Int, paddle_height_cells * JET_MAX_WIDTH_FRAC))
 
     start_x_world_edge = (paddle_id == 1) ? PADDLE_WIDTH : (COURT_WIDTH - PADDLE_WIDTH)
-    
+
     start_gxi_jet_float = if paddle_id == 1
         world_to_grid(Point2f(start_x_world_edge + FLUID_DX * 0.5f0, 0f0))[1]
     else
@@ -512,8 +519,8 @@ function apply_paddle_jet_effect!( # Renamed in thought process, but keeping use
     end
     start_gxi_jet_idx = clamp(round(Int, start_gxi_jet_float), 2, NX + 1)
 
-    base_half_width_cells = max(1, round(Int, (paddle_height_cells / 3.0) / 2.0)) 
-    tip_half_width_cells = max(1, round(Int, max_jet_width_at_tip_cells / 2.0))   
+    base_half_width_cells = max(1, round(Int, (paddle_height_cells / 3.0) / 2.0))
+    tip_half_width_cells = max(1, round(Int, max_jet_width_at_tip_cells / 2.0))
 
     for i_dist_cells in 0:(JET_CONE_LENGTH_CELLS - 1)
         current_gxi = if paddle_id == 1
@@ -522,21 +529,21 @@ function apply_paddle_jet_effect!( # Renamed in thought process, but keeping use
             start_gxi_jet_idx - i_dist_cells
         end
 
-        if !(2 <= current_gxi <= NX + 1) continue end 
+        if !(2 <= current_gxi <= NX + 1) continue end
 
         width_frac = JET_CONE_LENGTH_CELLS <= 1 ? 1.0f0 : Float32(i_dist_cells) / max(1.0f0, Float32(JET_CONE_LENGTH_CELLS - 1))
         current_jet_half_width_cells = round(Int, base_half_width_cells + (tip_half_width_cells - base_half_width_cells) * width_frac)
         current_jet_half_width_cells = max(1, current_jet_half_width_cells)
 
-        for gy_offset_loop in -(current_jet_half_width_cells -1) : (current_jet_half_width_cells-1) 
+        for gy_offset_loop in -(current_jet_half_width_cells -1) : (current_jet_half_width_cells-1)
             current_gyi = clamp(paddle_center_gy_idx + gy_offset_loop, 2, NY + 1)
             idx_cone = IX(current_gxi, current_gyi)
 
-            if paddle_id == 1 
+            if paddle_id == 1
                 fluid_color_R[idx_cone] = 1.0f0
                 fluid_color_G[idx_cone] = 0.0f0
                 fluid_color_B[idx_cone] = 0.0f0
-            else 
+            else
                 fluid_color_R[idx_cone] = 0.0f0
                 fluid_color_G[idx_cone] = 0.0f0
                 fluid_color_B[idx_cone] = 1.0f0
@@ -548,9 +555,67 @@ end
 
 
 function run()
-    fig = Figure(size=(COURT_WIDTH, COURT_HEIGHT), backgroundcolor=:black, figure_padding=0)
-    ax = Axis(fig[1, 1], aspect=DataAspect(), limits=(0, COURT_WIDTH, 0, COURT_HEIGHT), backgroundcolor=:dimgrey)
+    # Increase this to give more space to the entire slider panel
+    slider_panel_width = 300 # Increased from your original 230
+
+    # Adjust figure width to accommodate the wider slider panel and default gaps
+    fig_width = COURT_WIDTH + slider_panel_width + 20
+    fig = Figure(size=(fig_width, COURT_HEIGHT), backgroundcolor=:gainsboro, figure_padding=5)
+
+    # Main game layout
+    game_gl = fig[1, 1] = GridLayout()
+    ax = Axis(game_gl[1, 1], aspect=DataAspect(), limits=(0, COURT_WIDTH, 0, COURT_HEIGHT), backgroundcolor=:dimgrey)
     hidedecorations!(ax); hidespines!(ax)
+
+    # Slider panel layout
+    slider_gl = fig[1, 2] = GridLayout(width=slider_panel_width, tellheight=false)
+    Label(slider_gl[1,1], "Fluid Controls", fontsize=20, font=:bold, halign=:center, padding=(0,0,10,0))
+
+    # Common settings for SliderGrid internal layout
+    slider_colsizes_setting = (Auto(), Relative(1.0), Auto()) # Label, Slider (takes rest), Value
+    slider_colgaps_setting = 10 # Reduced gap for all gaps between columns
+
+    # Activity Slider
+    sg_activity = SliderGrid(
+        slider_gl[2,1],
+        (label = "Activity (α)", range = 0.0f0:0.05f0:1.0f0, format = "{:.2f}", startvalue = activity_obs[]),
+    )
+
+    # Corrected way to set internal column sizes for the SliderGrid's layout
+    colsize!(sg_activity.layout, 1, slider_colsizes_setting[1])
+    colsize!(sg_activity.layout, 2, slider_colsizes_setting[2])
+    colsize!(sg_activity.layout, 3, slider_colsizes_setting[3])
+
+    colgap!(sg_activity.layout, 1, slider_colgaps_setting) # Sets the gap after column 1 (label)
+    colgap!(sg_activity.layout, 2, slider_colgaps_setting) # Sets the gap after column 2 (slider)
+
+    on(sg_activity.sliders[1].value) do val; activity_obs[] = val; end
+
+    # Apply similar corrections for sg_viscosity and sg_elasticity
+    # Viscosity Slider
+    sg_viscosity = SliderGrid(
+        slider_gl[3,1],
+        (label = "Viscosity (μ)", range = 0.001f0:0.0005f0:0.05f0, format = "{:.4f}", startvalue = viscosity_obs[]),
+    )
+    colsize!(sg_viscosity.layout, 1, slider_colsizes_setting[1])
+    colsize!(sg_viscosity.layout, 2, slider_colsizes_setting[2])
+    colsize!(sg_viscosity.layout, 3, slider_colsizes_setting[3])
+        colgap!(sg_viscosity.layout, 1, slider_colgaps_setting) # Sets the gap after column 1 (label)
+    colgap!(sg_viscosity.layout, 2, slider_colgaps_setting) # Sets the gap after column 2 (slider)
+    on(sg_viscosity.sliders[1].value) do val; viscosity_obs[] = val; end
+
+    # Elasticity Slider
+    sg_elasticity = SliderGrid(
+        slider_gl[4,1],
+        (label = "Elasticity (K)", range = 0.0001f0:0.0005f0:0.05f0, format = "{:.4f}", startvalue = elasticity_obs[]),
+    )
+    colsize!(sg_elasticity.layout, 1, slider_colsizes_setting[1])
+    colsize!(sg_elasticity.layout, 2, slider_colsizes_setting[2])
+    colsize!(sg_elasticity.layout, 3, slider_colsizes_setting[3])
+            colgap!(sg_elasticity.layout, 1, slider_colgaps_setting) # Sets the gap after column 1 (label)
+    colgap!(sg_elasticity.layout, 2, slider_colgaps_setting) # Sets the gap after column 2 (slider)
+    on(sg_elasticity.sliders[1].value) do val; elasticity_obs[] = val; end
+
 
     # Initialize fluid arrays
     fill!(fluid_vx, 0.0f0); fill!(fluid_vy, 0.0f0); fill!(fluid_vx0, 0.0f0); fill!(fluid_vy0, 0.0f0)
@@ -642,14 +707,14 @@ function run()
                 if lambda_eigen < epsilon # Isotropic or very small order
                     director_x = 1.0f0; director_y = 0.0f0; # Default
                 else
-                    director_x = qxy_val 
-                    director_y = lambda_eigen - qxx_val 
+                    director_x = qxy_val
+                    director_y = lambda_eigen - qxx_val
                     angle_double = atan(qxy_val, qxx_val) # Gives angle of (Qxx, Qxy) vector, which is 2*phi
                     angle_director = 0.5f0 * angle_double
                     director_x = cos(angle_director)
                     director_y = sin(angle_director)
                 end
-                
+
                 norm_dir = sqrt(director_x^2 + director_y^2)
                 if norm_dir > epsilon
                     new_arrow_dirs_local[vis_idx] = Vec2f(director_x/norm_dir, director_y/norm_dir)
@@ -660,10 +725,10 @@ function run()
             end
             if vis_idx > num_arrows break end
         end
-        if num_arrows > 0 && vis_idx -1 == num_arrows 
+        if num_arrows > 0 && vis_idx -1 == num_arrows
              arrow_dir_obs[] = new_arrow_dirs_local
         elseif num_arrows == 0
-             arrow_dir_obs[] = Vec2f[] 
+             arrow_dir_obs[] = Vec2f[]
         end
     end
 
@@ -671,8 +736,8 @@ function run()
     on(events(fig).tick) do _
         if !game_active[]; return Consume(false); end
         current_time = time(); dt_game = Float32(clamp(current_time - last_update_time[], 0.001, 0.05)); last_update_time[] = current_time
-        keys = events(fig).keyboardstate; bp = ball_pos[]; bv = ball_vel[]; cbs = current_ball_speed[]; 
-        p_left_y_val = paddle_left_y[]; p_right_y_val = paddle_right_y[]; prev_ball_pos[] = bp 
+        keys = events(fig).keyboardstate; bp = ball_pos[]; bv = ball_vel[]; cbs = current_ball_speed[];
+        p_left_y_val = paddle_left_y[]; p_right_y_val = paddle_right_y[]; prev_ball_pos[] = bp
 
         paddle_delta = PADDLE_SPEED * dt_game
         if Keyboard.w in keys; paddle_left_y[] += paddle_delta; end; if Keyboard.s in keys; paddle_left_y[] -= paddle_delta; end
@@ -685,12 +750,12 @@ function run()
         is_p1_pushing_this_frame = (Keyboard.d in keys || (Keyboard.space in keys && served_by[] == :p1)) && serve_state[] == :playing
         is_p2_pushing_this_frame = (Keyboard.left in keys || (Keyboard.enter in keys && served_by[] == :p2)) && serve_state[] == :playing
 
-        if Keyboard.a in keys && serve_state[] == :playing 
+        if Keyboard.a in keys && serve_state[] == :playing
             paddle_center_y = p_left_y_val + PADDLE_HEIGHT / 2f0; paddle_center_world = Point2f(PADDLE_WIDTH / 2f0, paddle_center_y)
             dir_to_paddle = paddle_center_world - bp; dist_sq = sum(dir_to_paddle .^ 2)
             if dist_sq > 1e-4; direct_pull_force += normalize(dir_to_paddle) * PULL_FORCE_STRENGTH; end
         end
-        if Keyboard.right in keys && serve_state[] == :playing 
+        if Keyboard.right in keys && serve_state[] == :playing
             paddle_center_y = p_right_y_val + PADDLE_HEIGHT / 2f0; paddle_center_world = Point2f(COURT_WIDTH - PADDLE_WIDTH / 2f0, paddle_center_y)
             dir_to_paddle = paddle_center_world - bp; dist_sq = sum(dir_to_paddle .^ 2)
             if dist_sq > 1e-4; direct_pull_force += normalize(dir_to_paddle) * PULL_FORCE_STRENGTH; end
@@ -700,14 +765,14 @@ function run()
         steps_taken = 0; max_steps_per_frame = 5 # Max fluid steps per game frame
         while fluid_time_accumulator[] >= DT && steps_taken < max_steps_per_frame
             if is_p1_pushing_this_frame
-                apply_paddle_jet_effect!(1, p_left_y_val); 
+                apply_paddle_jet_effect!(1, p_left_y_val);
             end
             if is_p2_pushing_this_frame
-                apply_paddle_jet_effect!(2, p_right_y_val); 
+                apply_paddle_jet_effect!(2, p_right_y_val);
             end
 
             fluid_step!(is_p1_pushing_this_frame, p_left_y_val, is_p2_pushing_this_frame, p_right_y_val)
-            
+
             fluid_time_accumulator[] -= DT
             steps_taken += 1
         end
@@ -749,7 +814,7 @@ function run()
                  world_angle=pi-bounce_angle # Angle from positive x-axis for right paddle
                  new_bv=Vec2f(cos(world_angle), sin(world_angle))*cbs
                  new_bp=Point2f(COURT_WIDTH-PADDLE_WIDTH-BALL_SIZE/2f0-0.1f0, new_bp[2])
-             end
+              end
             ball_pos[] = new_bp; ball_vel[] = new_bv; current_ball_speed[] = norm(new_bv) # Update speed based on new velocity
 
             scored = false; final_pos = ball_pos[] # Use updated ball_pos
@@ -757,7 +822,7 @@ function run()
             if final_pos[1] > COURT_WIDTH-BALL_SIZE/2f0; score_left[]+=1; served_by[]=:p2; scored=true; end
             if scored
                  if score_left[] >= SCORE_LIMIT || score_right[] >= SCORE_LIMIT
-                     game_active[] = false; winner = score_left[] >= SCORE_LIMIT ? "Left" : "Right"; game_message[] = "$winner Player Wins!\nPress R to Restart"
+                      game_active[] = false; winner = score_left[] >= SCORE_LIMIT ? "Left" : "Right"; game_message[] = "$winner Player Wins!\nPress R to Restart"
                  else; reset_ball(); end
             end
         elseif serve_state[] == :p1_serve

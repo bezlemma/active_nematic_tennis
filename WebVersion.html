@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fluid-Inspired Pong JS</title>
+<style>
+  body {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    background-color: #2c2c2c;
+    font-family: Arial, sans-serif;
+    color: white;
+  }
+  .game-container {
+    text-align: center;
+    border: 2px solid #555;
+    padding: 10px;
+    background-color: #333;
+    box-shadow: 0 0 15px rgba(0,0,0,0.5);
+  }
+  canvas {
+    border: 1px solid white;
+    background-color: dimgrey; /* Similar to Julia's ax backgroundcolor */
+    display: block; /* Removes extra space below canvas */
+    margin: 0 auto;
+  }
+  .controls-info {
+    margin-top: 15px;
+    font-size: 0.9em;
+    color: #ccc;
+  }
+  .controls-info p {
+    margin: 5px 0;
+  }
+  .controls-info strong {
+    color: #eee;
+  }
+</style>
+</head>
+<body>
+
+  <div class="game-container">
+    <h2 style="margin-top:0;">Fluid-Inspired Pong</h2>
+    <canvas id="gameCanvas"></canvas>
+    <div id="scoreDisplay" style="font-size: 28px; margin-top:10px; margin-bottom: 5px;">0 - 0</div>
+    <div id="gameMessage" style="color: yellow; font-size: 20px; min-height: 25px; margin-bottom:10px;">Press Space or Enter to Start</div>
+  </div>
+
+  <div class="controls-info">
+    <p><strong>Player 1 (Left):</strong> Move: <strong>W</strong> (up), <strong>S</strong> (down). Serve/Push: <strong>D</strong> or <strong>Space</strong>.</p>
+    <p><strong>Player 2 (Right):</strong> Move: <strong>ArrowUp</strong>, <strong>ArrowDown</strong>. Serve/Push: <strong>ArrowLeft</strong> or <strong>Enter</strong>.</p>
+    <p>Game Over: Press <strong>R</strong> to Restart.</p>
+    <p style="margin-top:15px; font-style:italic; color: #aaa;">Note: This version implements Pong gameplay. The complex fluid dynamics from the original Julia code are not included.</p>
+  </div>
+
+<script>
+const PADDLE_SPEED = 7;         // Speed of paddles in pixels per frame
+const INITIAL_BALL_SPEED = 5;   // Initial speed of the ball
+const BALL_SPEED_INCREASE = 0.3;// How much ball speed increases on paddle hit
+const PADDLE_HEIGHT = 100;
+const PADDLE_WIDTH = 20;
+const BALL_RADIUS = 10;
+const COURT_WIDTH = 800;
+const COURT_HEIGHT = 600;
+const SCORE_LIMIT = 5;
+
+// --- Canvas Setup ---
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = COURT_WIDTH;
+canvas.height = COURT_HEIGHT;
+
+const scoreDisplay = document.getElementById('scoreDisplay');
+const gameMessage = document.getElementById('gameMessage');
+
+// --- Game State ---
+let paddleLeftY = COURT_HEIGHT / 2 - PADDLE_HEIGHT / 2;
+let paddleRightY = COURT_HEIGHT / 2 - PADDLE_HEIGHT / 2;
+
+let ball = {
+    x: COURT_WIDTH / 2,
+    y: COURT_HEIGHT / 2,
+    dx: 0, // velocity x
+    dy: 0, // velocity y
+    speed: INITIAL_BALL_SPEED
+};
+
+let scoreLeft = 0;
+let scoreRight = 0;
+let gameActive = true; 
+let serveState = 'p1_serve'; // 'p1_serve', 'p2_serve', 'playing'
+let servedBy = 'p1';         // Who will serve next ('p1' or 'p2')
+
+// --- Input Handling ---
+const keysPressed = {};
+window.addEventListener('keydown', (e) => {
+    keysPressed[e.key.toLowerCase()] = true;
+    handleKeyPress(e); // For single-press actions like serve/restart
+});
+window.addEventListener('keyup', (e) => {
+    keysPressed[e.key.toLowerCase()] = false;
+});
+
+// --- Drawing Functions ---
+function drawRect(x, y, w, h, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, w, h);
+}
+
+function drawCircle(x, y, r, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2, false);
+    ctx.closePath();
+    ctx.fill();
+}
+
+// --- Game Logic Functions ---
+function resetBall() {
+    ball.speed = INITIAL_BALL_SPEED;
+    ball.dx = 0;
+    ball.dy = 0;
+    let paddleYToFollow;
+
+    if (servedBy === 'p1') {
+        ball.x = PADDLE_WIDTH + BALL_RADIUS + 10; // Start near left paddle
+        paddleYToFollow = paddleLeftY;
+        serveState = 'p1_serve';
+        gameMessage.textContent = "P1: D or Space to Serve";
+    } else { // servedBy === 'p2'
+        ball.x = COURT_WIDTH - PADDLE_WIDTH - BALL_RADIUS - 10; // Start near right paddle
+        paddleYToFollow = paddleRightY;
+        serveState = 'p2_serve';
+        gameMessage.textContent = "P2: ArrowLeft or Enter to Serve";
+    }
+    ball.y = paddleYToFollow + PADDLE_HEIGHT / 2;
+    // Clamp ball.y to be within court vertically, considering its radius
+    ball.y = Math.max(BALL_RADIUS, Math.min(ball.y, COURT_HEIGHT - BALL_RADIUS));
+}
+
+function movePaddles() {
+    // Player 1 (Left Paddle) - W/S keys
+    if (keysPressed['w']) {
+        paddleLeftY -= PADDLE_SPEED;
+    }
+    if (keysPressed['s']) {
+        paddleLeftY += PADDLE_SPEED;
+    }
+    paddleLeftY = Math.max(0, Math.min(paddleLeftY, COURT_HEIGHT - PADDLE_HEIGHT));
+
+    // Player 2 (Right Paddle) - ArrowUp/ArrowDown keys
+    if (keysPressed['arrowup']) {
+        paddleRightY -= PADDLE_SPEED;
+    }
+    if (keysPressed['arrowdown']) {
+        paddleRightY += PADDLE_SPEED;
+    }
+    paddleRightY = Math.max(0, Math.min(paddleRightY, COURT_HEIGHT - PADDLE_HEIGHT));
+
+    // If in serve state, ball follows the serving paddle vertically
+    if (serveState === 'p1_serve') {
+        ball.y = paddleLeftY + PADDLE_HEIGHT / 2;
+        ball.y = Math.max(BALL_RADIUS, Math.min(ball.y, COURT_HEIGHT - BALL_RADIUS));
+    } else if (serveState === 'p2_serve') {
+        ball.y = paddleRightY + PADDLE_HEIGHT / 2;
+        ball.y = Math.max(BALL_RADIUS, Math.min(ball.y, COURT_HEIGHT - BALL_RADIUS));
+    }
+}
+
+function moveBall() {
+    if (serveState !== 'playing') return; // Ball only moves if actively in play
+
+    ball.x += ball.dx;
+    ball.y += ball.dy;
+
+    // Wall collisions (top/bottom)
+    if (ball.y - BALL_RADIUS < 0) { // Hit top wall
+        ball.y = BALL_RADIUS;
+        ball.dy *= -1;
+    } else if (ball.y + BALL_RADIUS > COURT_HEIGHT) { // Hit bottom wall
+        ball.y = COURT_HEIGHT - BALL_RADIUS;
+        ball.dy *= -1;
+    }
+
+    // Paddle collisions
+    let hitPaddle = false;
+
+    // Left paddle collision
+    if (ball.dx < 0 && // Ball moving left
+        ball.x - BALL_RADIUS < PADDLE_WIDTH &&
+        ball.x - BALL_RADIUS > 0 && // Ensure it's beyond the paddle's front face but not past its back
+        ball.y + BALL_RADIUS > paddleLeftY && ball.y - BALL_RADIUS < paddleLeftY + PADDLE_HEIGHT) {
+        
+        ball.x = PADDLE_WIDTH + BALL_RADIUS; // Place ball just outside paddle
+        hitPaddle = true;
+        const hitOffset = (ball.y - (paddleLeftY + PADDLE_HEIGHT / 2)) / (PADDLE_HEIGHT / 2); // Range -1 to 1
+        const bounceAngle = hitOffset * (Math.PI / 3); // Max bounce angle PI/3 (60 degrees)
+        
+        ball.speed += BALL_SPEED_INCREASE;
+        ball.dx = ball.speed * Math.cos(bounceAngle);
+        ball.dy = ball.speed * Math.sin(bounceAngle);
+    }
+    // Right paddle collision
+    else if (ball.dx > 0 && // Ball moving right
+        ball.x + BALL_RADIUS > COURT_WIDTH - PADDLE_WIDTH &&
+        ball.x + BALL_RADIUS < COURT_WIDTH && // Ensure it's beyond the paddle's front face
+        ball.y + BALL_RADIUS > paddleRightY && ball.y - BALL_RADIUS < paddleRightY + PADDLE_HEIGHT) {
+        
+        ball.x = COURT_WIDTH - PADDLE_WIDTH - BALL_RADIUS; // Place ball just outside paddle
+        hitPaddle = true;
+        const hitOffset = (ball.y - (paddleRightY + PADDLE_HEIGHT / 2)) / (PADDLE_HEIGHT / 2); // Range -1 to 1
+        const bounceAngle = hitOffset * (Math.PI / 3); // Max bounce angle PI/3
+
+        ball.speed += BALL_SPEED_INCREASE;
+        const worldAngle = Math.PI - bounceAngle; // Angle for right paddle reflection
+        ball.dx = ball.speed * Math.cos(worldAngle); // Will be negative
+        ball.dy = ball.speed * Math.sin(worldAngle);
+    }
+
+    // Scoring
+    if (ball.x + BALL_RADIUS < 0) { // Ball went off left edge
+        scoreRight++;
+        servedBy = 'p1'; // Player who got scored on serves next
+        checkEndConditions();
+    } else if (ball.x - BALL_RADIUS > COURT_WIDTH) { // Ball went off right edge
+        scoreLeft++;
+        servedBy = 'p2';
+        checkEndConditions();
+    }
+}
+
+function checkEndConditions() {
+    scoreDisplay.textContent = `${scoreLeft} - ${scoreRight}`;
+    if (scoreLeft >= SCORE_LIMIT || scoreRight >= SCORE_LIMIT) {
+        gameActive = false; // Stops ball movement, paddle movement still allowed by logic
+        serveState = 'game_over';
+        const winner = scoreLeft >= SCORE_LIMIT ? "Left" : "Right";
+        gameMessage.textContent = `${winner} Player Wins! Press R to Restart`;
+    } else {
+        resetBall(); // Prepare for the next serve
+    }
+}
+
+function handleKeyPress(e) {
+    const key = e.key.toLowerCase();
+
+    if (serveState === 'game_over') {
+        if (key === 'r') {
+            resetGame();
+        }
+        return;
+    }
+    
+    // Serve logic
+    let serveTriggered = false;
+    let serverIsP1 = false;
+
+    if (serveState === 'p1_serve' && (key === 'd' || key === ' ')) {
+        serveTriggered = true;
+        serverIsP1 = true;
+    } else if (serveState === 'p2_serve' && (key === 'arrowleft' || key === 'enter')) {
+        serveTriggered = true;
+        serverIsP1 = false;
+    }
+
+    if (serveTriggered) {
+        const angleOffset = (Math.random() * (Math.PI / 3)) - (Math.PI / 6); // Random angle +/- 30 degrees
+        let finalAngle = angleOffset;
+        if (!serverIsP1) { // P2 serving
+            finalAngle = Math.PI + angleOffset;
+        }
+        
+        ball.dx = ball.speed * Math.cos(finalAngle);
+        ball.dy = ball.speed * Math.sin(finalAngle);
+        serveState = 'playing';
+        gameMessage.textContent = ""; // Clear serve message
+    }
+}
+
+function resetGame() {
+    scoreLeft = 0;
+    scoreRight = 0;
+    scoreDisplay.textContent = `${scoreLeft} - ${scoreRight}`;
+    
+    paddleLeftY = COURT_HEIGHT / 2 - PADDLE_HEIGHT / 2;
+    paddleRightY = COURT_HEIGHT / 2 - PADDLE_HEIGHT / 2;
+    
+    servedBy = (Math.random() < 0.5) ? 'p1' : 'p2'; // Random server for new game
+    resetBall(); // This sets up ball position and serveState for the first serve
+    gameActive = true;
+}
+
+
+// --- Main Update and Render Loop ---
+function update() {
+    movePaddles(); // Paddles can always move
+    if (gameActive && serveState === 'playing') {
+        moveBall();
+    }
+
+    // --- FLUID SIMULATION WOULD BE UPDATED HERE (NOT IMPLEMENTED) ---
+    // e.g., updateFluidGrid(deltaTime);
+    // e.g., ball.dx += fluidInfluenceX; ball.dy += fluidInfluenceY;
+    // ---------------------------------------------------------------
+}
+
+function render() {
+    // Clear canvas (background)
+    drawRect(0, 0, COURT_WIDTH, COURT_HEIGHT, 'dimgrey');
+
+    // --- FLUID VISUALIZATION WOULD BE RENDERED HERE (NOT IMPLEMENTED) ---
+    // e.g., drawFluidColors(); drawNematicArrows();
+    // --------------------------------------------------------------------
+
+    // Draw paddles
+    drawRect(0, paddleLeftY, PADDLE_WIDTH, PADDLE_HEIGHT, 'lightcyan');
+    drawRect(COURT_WIDTH - PADDLE_WIDTH, paddleRightY, PADDLE_WIDTH, PADDLE_HEIGHT, 'lightcyan');
+
+    // Draw ball (only if game is active or waiting for serve, not if game over and message shown)
+    if (gameActive || serveState === 'p1_serve' || serveState === 'p2_serve') {
+         drawCircle(ball.x, ball.y, BALL_RADIUS, 'yellow');
+    }
+}
+
+function gameLoop() {
+    update();
+    render();
+    requestAnimationFrame(gameLoop);
+}
+
+// --- Initialize Game ---
+resetBall(); // Set initial positions, scores, and messages
+gameLoop();  // Start the game loop
+
+</script>
+
+</body>
+</html>
