@@ -41,7 +41,7 @@ const FLUID_DX = COURT_WIDTH / FLUID_NX
 const FLUID_DY = COURT_HEIGHT / FLUID_NY
 const FLUID_SIZE = (FLUID_NX + 2) * (FLUID_NY + 2)
 
-# --- Global Fluid Arrays (Initialize in run_pong) ---
+# --- Global Fluid Arrays ---
 global fluid_vx::Vector{Float32} = zeros(Float32, FLUID_SIZE)
 global fluid_vy::Vector{Float32} = zeros(Float32, FLUID_SIZE)
 global fluid_vx0::Vector{Float32} = zeros(Float32, FLUID_SIZE)
@@ -54,7 +54,7 @@ global fluid_dens_obs = Observable(zeros(Float32, FLUID_NX, FLUID_NY))
 
 @inline IX(i, j) = clamp(i, 1, FLUID_NX + 2) + (clamp(j, 1, FLUID_NY + 2) - 1) * (FLUID_NX + 2)
 
-# --- Fluid Simulation Core Functions (Unchanged) ---
+# --- Fluid Simulation 
 function set_boundary!(b::Int, x::Vector{Float32})
     N = FLUID_NX; M = FLUID_NY
     for i in 1:(N + 2); x[IX(i, 1)] = b == 2 ? -x[IX(i, 2)] : x[IX(i, 2)]; x[IX(i, M+2)] = b == 2 ? -x[IX(i, M+1)] : x[IX(i, M+1)]; end
@@ -111,25 +111,24 @@ function project!(velX::Vector{Float32}, velY::Vector{Float32}, p::Vector{Float3
     set_boundary!(1, velX); set_boundary!(2, velY)
 end
 
-# --- Main Fluid Simulation Step Function (Unchanged) ---
+# --- Main Fluid Simulation Step
 function fluid_step!()
     if !FLUID_ENABLED return end
     dt = FLUID_DT; visc = FLUID_VISC; diff = FLUID_DIFF
-    # Use views or copies intelligently to avoid excessive allocation if performance becomes an issue
+
     vx0_temp = copy(fluid_vx); vy0_temp = copy(fluid_vy); dens0_temp = copy(fluid_dens)
     # --- Velocity Step ---
     diffuse!(1, fluid_vx, vx0_temp, visc, dt)
     diffuse!(2, fluid_vy, vy0_temp, visc, dt)
-    project!(fluid_vx, fluid_vy, fluid_p, fluid_div) # Keep calculation order consistent if visc > 0
+    project!(fluid_vx, fluid_vy, fluid_p, fluid_div) 
     # Advect Velocity
     vx_pre_advect = copy(fluid_vx); vy_pre_advect = copy(fluid_vy)
     advect!(1, fluid_vx, vx_pre_advect, vx_pre_advect, vy_pre_advect, dt)
     advect!(2, fluid_vy, vy_pre_advect, vx_pre_advect, vy_pre_advect, dt)
-    project!(fluid_vx, fluid_vy, fluid_p, fluid_div) # Project Velocity (Final incompressibility)
+    project!(fluid_vx, fluid_vy, fluid_p, fluid_div) 
 
     # --- Density Step ---
-    diffuse!(0, fluid_dens, dens0_temp, diff, dt) # Diffuse Density
-    # Advect Density
+    diffuse!(0, fluid_dens, dens0_temp, diff, dt) 
     dens_pre_advect = copy(fluid_dens)
     advect!(0, fluid_dens, dens_pre_advect, fluid_vx, fluid_vy, dt)
 end
@@ -137,12 +136,12 @@ end
 # --- Interaction Functions ---
 
 function world_to_grid(pos::Point2f)
-    gx = (pos[1] / COURT_WIDTH) * FLUID_NX + 1.5f0 # Add 0.5 to center in cell, +1 for border offset
-    gy = (pos[2] / COURT_HEIGHT) * FLUID_NY + 1.5f0 # Add 0.5 to center in cell, +1 for border offset
+    gx = (pos[1] / COURT_WIDTH) * FLUID_NX + 1.5f0 
+    gy = (pos[2] / COURT_HEIGHT) * FLUID_NY + 1.5f0 
     return gx, gy
 end
 
-# Interpolate fluid velocity (Unchanged)
+# Interpolate fluid velocity
 function get_fluid_velocity_at(pos::Point2f)::Vec2f
     if !FLUID_ENABLED return Vec2f(0.0f0) end
     gx, gy = world_to_grid(pos)
@@ -160,21 +159,24 @@ function get_fluid_velocity_at(pos::Point2f)::Vec2f
 end
 
 
-# --- Helper Function for Rectangle Overlap (Unchanged) ---
+# --- Helper Function for Rectangle Overlap
 function rect_overlaps(r1::Rect2f, r2::Rect2f)
     x_overlap = (r1.origin[1] < r2.origin[1] + r2.widths[1]) && (r1.origin[1] + r1.widths[1] > r2.origin[1])
     y_overlap = (r1.origin[2] < r2.origin[2] + r2.widths[2]) && (r1.origin[2] + r1.widths[2] > r2.origin[2])
     return x_overlap && y_overlap
 end
 
-# --- Main Game Function ---
+
+
+
+
+
 function run()
     fig = Figure(size = (COURT_WIDTH, COURT_HEIGHT), backgroundcolor = :black, figure_padding = 0)
     fig.scene.backgroundcolor[] = RGBf(0.0, 0.0, 0.0)
     ax = Axis(fig[1, 1], aspect = DataAspect(), limits = (0, COURT_WIDTH, 0, COURT_HEIGHT), backgroundcolor = :black)
     hidedecorations!(ax); hidespines!(ax)
 
-    # Initialize Fluid State
     if FLUID_ENABLED
         global fluid_vx = zeros(Float32, FLUID_SIZE); global fluid_vy = zeros(Float32, FLUID_SIZE)
         global fluid_vx0 = zeros(Float32, FLUID_SIZE); global fluid_vy0 = zeros(Float32, FLUID_SIZE)
@@ -183,7 +185,6 @@ function run()
         global fluid_dens_obs = Observable(zeros(Float32, FLUID_NX, FLUID_NY))
     end
 
-    # Game Observables
     ball_pos = Observable(Point2f(COURT_WIDTH / 2f0, COURT_HEIGHT / 2f0))
     prev_ball_pos = Observable(Point2f(COURT_WIDTH / 2f0, COURT_HEIGHT / 2f0))
     ball_vel = Observable(Vec2f(0f0, 0f0))
@@ -198,7 +199,6 @@ function run()
     last_update_time = Ref(time())
     fluid_time_accumulator = Ref(0.0f0)
 
-    # PLOTS
     if FLUID_ENABLED
         fluid_x_range = LinRange(0 + FLUID_DX/2, COURT_WIDTH - FLUID_DX/2, FLUID_NX)
         fluid_y_range = LinRange(0 + FLUID_DY/2, COURT_HEIGHT - FLUID_DY/2, FLUID_NY)
@@ -215,8 +215,6 @@ function run()
     text!(ax, score_text_obs, position = Point2f(COURT_WIDTH/2f0, COURT_HEIGHT - 20f0), fontsize = 40, color = :white, align = (:center, :top), space = :pixel)
     text!(ax, game_message, position = Point2f(COURT_WIDTH/2f0, 30f0), fontsize = 30, color = :yellow, align = (:center, :bottom), space = :pixel)
 
-
-    # --- Reset Ball Function ---
     function reset_ball()
         current_ball_speed[] = BALL_SPEED_INIT
         ball_vel[] = Vec2f(0f0, 0f0)
@@ -283,7 +281,7 @@ function run()
                     fluid_dens[idx] += push_dens_dt # Add density
                 end
 
-            elseif Keyboard.a in keys && serve_state[] == :playing # PULL (only when playing)
+            elseif Keyboard.a in keys && serve_state[] == :playing # PULL
                 paddle_center_y = p_left_y + PADDLE_HEIGHT / 2f0
                 paddle_center_world = Point2f(PADDLE_WIDTH / 2f0, paddle_center_y) # Target center
                 dir_to_paddle = paddle_center_world - bp
@@ -334,7 +332,7 @@ function run()
                     fluid_dens[idx] += push_dens_dt
                 end
 
-            elseif Keyboard.right in keys && serve_state[] == :playing # PULL (only when playing)
+            elseif Keyboard.right in keys && serve_state[] == :playing # PULL 
                 paddle_center_y = p_right_y + PADDLE_HEIGHT / 2f0
                 paddle_center_world = Point2f(COURT_WIDTH - PADDLE_WIDTH / 2f0, paddle_center_y)
                 dir_to_paddle = paddle_center_world - bp
@@ -371,7 +369,7 @@ function run()
                 fluid_time_accumulator[] -= FLUID_DT
             end
 
-            # --- Density Decay & Observable Update (After stepping) ---
+            # --- Density Decay & Observable Update 
             decay_factor = 1.0f0 - DENSITY_DECAY_RATE * dt
             if decay_factor < 0.999f0 # Avoid unnecessary multiplication if decay is tiny
                  @. fluid_dens = fluid_dens * decay_factor
@@ -409,11 +407,11 @@ function run()
             new_bp = bp + new_bv * dt     # Update position using *new* velocity
             collided_y = false
             if new_bp[2] - BALL_SIZE/2f0 <= 0f0
-                new_bp = Point2f(new_bp[1], BALL_SIZE/2f0 + 0.1f0) # Correct position
+                new_bp = Point2f(new_bp[1], BALL_SIZE/2f0 + 0.1f0)
                 new_bv = Vec2f(new_bv[1], -new_bv[2]) # Reflect Y velocity
                 collided_y = true
             elseif new_bp[2] + BALL_SIZE/2f0 >= COURT_HEIGHT
-                new_bp = Point2f(new_bp[1], COURT_HEIGHT - BALL_SIZE/2f0 - 0.1f0) # Correct position
+                new_bp = Point2f(new_bp[1], COURT_HEIGHT - BALL_SIZE/2f0 - 0.1f0)
                 new_bv = Vec2f(new_bv[1], -new_bv[2]) # Reflect Y velocity
                 collided_y = true
             end
@@ -423,7 +421,6 @@ function run()
             ball_rect_predict = Rect2f(new_bp[1]-BALL_SIZE/2f0, new_bp[2]-BALL_SIZE/2f0, BALL_SIZE, BALL_SIZE)
 
             if new_bv[1] < 0f0 && rect_overlaps(paddle_left_rect, ball_rect_predict) # Moving left, hit left paddle
-                 # Avoid getting stuck: ensure ball is outside paddle *before* calculating bounce
                 new_bp = Point2f(PADDLE_WIDTH + BALL_SIZE/2f0 + 0.1f0, new_bp[2])
 
                 paddle_center = p_left_y + PADDLE_HEIGHT / 2f0
@@ -433,7 +430,6 @@ function run()
                 new_bv = Vec2f(cos(bounce_angle), sin(bounce_angle)) * cbs # New velocity vector
 
             elseif new_bv[1] > 0f0 && rect_overlaps(paddle_right_rect, ball_rect_predict) # Moving right, hit right paddle
-                 # Avoid getting stuck: ensure ball is outside paddle *before* calculating bounce
                 new_bp = Point2f(COURT_WIDTH - PADDLE_WIDTH - BALL_SIZE/2f0 - 0.1f0, new_bp[2])
 
                 paddle_center = p_right_y + PADDLE_HEIGHT / 2f0
@@ -463,11 +459,11 @@ function run()
                     winner = score_left[] >= SCORE_LIMIT ? "Left Player" : "Right Player"
                     game_message[] = "$winner Wins!\nPress R to Restart"
                 else
-                    reset_ball() # Reset for next point (updates message too)
+                    reset_ball() # Reset for next point 
                 end
             end
 
-        # Ball follow paddle before serve (Unchanged logic)
+        # Ball follow paddle before serve
         elseif serve_state[] == :p1_serve
             target_y = p_left_y + PADDLE_HEIGHT / 2f0
             new_pos = Point2f(bp[1], clamp(target_y, BALL_SIZE/2f0, COURT_HEIGHT - BALL_SIZE/2f0))
